@@ -65,6 +65,9 @@ That’s exactly what RouteXplore does ✨
 
 ### 📜 License
 
-MIT License © 2025 RouteXplore
+This project is licensed under the PolyForm Noncommercial License 1.0.0.
 
-✨ RouteXplore – Make your trips more than just a journey.
+- Non-commercial use: permitted under the license.
+- Commercial use: requires a commercial license. See `COMMERCIAL-LICENSE.md`.
+
+See `LICENSE` for full text. Learn more: https://polyformproject.org/licenses/noncommercial/1.0.0/
