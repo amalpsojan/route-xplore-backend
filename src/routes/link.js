@@ -49,6 +49,22 @@ function tryParseDirPath(finalUrlString) {
   }
 }
 
+function tryParseSaddrDaddr(finalUrlString) {
+  try {
+    const url = new URL(finalUrlString);
+    const saddr = url.searchParams.get("saddr");
+    const daddr = url.searchParams.get("daddr");
+    if (!saddr || !daddr) return null;
+    const waypointsParam = url.searchParams.get("waypoints") || "";
+    const waypoints = waypointsParam
+      ? waypointsParam.split("|").map((w) => decodeURIComponent(w)).filter(Boolean)
+      : [];
+    return { start: decodeURIComponent(saddr), end: decodeURIComponent(daddr), waypoints };
+  } catch (_) {
+    return null;
+  }
+}
+
 async function resolveIfShortLink(originalLink) {
   try {
     const lower = originalLink.toLowerCase();
@@ -78,21 +94,42 @@ async function resolveIfShortLink(originalLink) {
   }
 }
 
-function tryParseSaddrDaddr(finalUrlString) {
+async function geocodeName(name) {
+  if (!name || typeof name !== "string") return null;
   try {
-    const url = new URL(finalUrlString);
-    const saddr = url.searchParams.get("saddr");
-    const daddr = url.searchParams.get("daddr");
-    if (!saddr || !daddr) return null;
-    // Some links include ftid/skid params; ignore. Waypoints sometimes come via repeated daddr or via waypoints param.
-    // Attempt to parse optional 'waypoints' as well if present
-    const waypointsParam = url.searchParams.get("waypoints") || "";
-    const waypoints = waypointsParam
-      ? waypointsParam.split("|").map((w) => decodeURIComponent(w)).filter(Boolean)
-      : [];
-    return { start: decodeURIComponent(saddr), end: decodeURIComponent(daddr), waypoints };
+    const cleaned = name.replace(/\+/g, " ").trim();
+    const resp = await axios.get("https://nominatim.openstreetmap.org/search", {
+      params: { q: cleaned, format: "json", limit: 1 },
+      headers: {
+        "User-Agent": "RouteXplore/1.0 (contact: example@routexplore.app)",
+        Accept: "application/json",
+      },
+      timeout: 10000,
+    });
+    const first = Array.isArray(resp.data) ? resp.data[0] : null;
+    if (!first?.lat || !first?.lon) return null;
+    return { lat: Number(first.lat), lng: Number(first.lon) };
   } catch (_) {
     return null;
+  }
+}
+
+function extractCoordsFromGoogleUrl(urlString) {
+  try {
+    // Collect pairs like !1d<lng>!2d<lat>
+    const pairs = [];
+    const regex = /!1d(-?\d+\.\d+)!2d(-?\d+\.\d+)/g;
+    let m;
+    while ((m = regex.exec(urlString)) !== null) {
+      const lng = Number(m[1]);
+      const lat = Number(m[2]);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        pairs.push({ lat, lng });
+      }
+    }
+    return pairs;
+  } catch (_) {
+    return [];
   }
 }
 
@@ -110,19 +147,55 @@ router.post("/", async (req, res) => {
     // Try api=1 style first
     const fromApi = tryParseApiParams(finalUrl);
     if (fromApi) {
-      return res.json({ ...fromApi, meta: { inputLink: link, finalUrl, parsedFrom: "api=1" } });
+      const coordPairs = extractCoordsFromGoogleUrl(finalUrl);
+      let [startC, endC] = await Promise.all([
+        geocodeName(fromApi.start),
+        geocodeName(fromApi.end),
+      ]);
+      if (!startC && coordPairs[0]) startC = coordPairs[0];
+      if (!endC && (coordPairs[1] || coordPairs[0])) endC = coordPairs[1] || coordPairs[0];
+      return res.json({
+        start: { name: fromApi.start.replace(/\+/g, " "), coordinates: startC || null },
+        end: { name: fromApi.end.replace(/\+/g, " "), coordinates: endC || null },
+        waypoints: fromApi.waypoints,
+        meta: { inputLink: link, finalUrl, parsedFrom: "api=1" },
+      });
     }
 
     // Fallback to /dir/ path style
     const fromDir = tryParseDirPath(finalUrl);
     if (fromDir) {
-      return res.json({ ...fromDir, meta: { inputLink: link, finalUrl, parsedFrom: "dir" } });
+      const coordPairs = extractCoordsFromGoogleUrl(finalUrl);
+      let [startC, endC] = await Promise.all([
+        geocodeName(fromDir.start),
+        geocodeName(fromDir.end),
+      ]);
+      if (!startC && coordPairs[0]) startC = coordPairs[0];
+      if (!endC && (coordPairs[1] || coordPairs[0])) endC = coordPairs[1] || coordPairs[0];
+      return res.json({
+        start: { name: fromDir.start.replace(/\+/g, " "), coordinates: startC || null },
+        end: { name: fromDir.end.replace(/\+/g, " "), coordinates: endC || null },
+        waypoints: fromDir.waypoints,
+        meta: { inputLink: link, finalUrl, parsedFrom: "dir" },
+      });
     }
 
     // Support legacy saddr/daddr style
     const fromSaddr = tryParseSaddrDaddr(finalUrl);
     if (fromSaddr) {
-      return res.json({ ...fromSaddr, meta: { inputLink: link, finalUrl, parsedFrom: "saddr-daddr" } });
+      const coordPairs = extractCoordsFromGoogleUrl(finalUrl);
+      let [startC, endC] = await Promise.all([
+        geocodeName(fromSaddr.start),
+        geocodeName(fromSaddr.end),
+      ]);
+      if (!startC && coordPairs[0]) startC = coordPairs[0];
+      if (!endC && (coordPairs[1] || coordPairs[0])) endC = coordPairs[1] || coordPairs[0];
+      return res.json({
+        start: { name: fromSaddr.start.replace(/\+/g, " "), coordinates: startC || null },
+        end: { name: fromSaddr.end.replace(/\+/g, " "), coordinates: endC || null },
+        waypoints: fromSaddr.waypoints,
+        meta: { inputLink: link, finalUrl, parsedFrom: "saddr-daddr" },
+      });
     }
 
     return res.status(400).json({ error: "Unrecognized Google Maps link format", meta: { inputLink: link, finalUrl } });
