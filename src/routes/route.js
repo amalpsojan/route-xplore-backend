@@ -1,67 +1,87 @@
 const express = require("express");
+const axios = require("axios");
 const router = express.Router();
 
-function normalizeWaypoints(rawWaypoints) {
-  if (!Array.isArray(rawWaypoints)) return [];
-  return rawWaypoints
-    .map((wp) => {
-      if (wp == null) return null;
-      if (typeof wp === "string") return { value: wp, via: false };
-      if (typeof wp === "object") {
-        const value = typeof wp.value === "string" ? wp.value : String(wp.value || "");
-        const via = Boolean(wp.via);
-        if (!value) return null;
-        return { value, via };
+function isValidCoord(obj) {
+  return (
+    obj &&
+    typeof obj.lat === "number" &&
+    typeof obj.lng === "number" &&
+    Number.isFinite(obj.lat) &&
+    Number.isFinite(obj.lng) &&
+    obj.lat >= -90 &&
+    obj.lat <= 90 &&
+    obj.lng >= -180 &&
+    obj.lng <= 180
+  );
+}
+
+function parseLatLngString(value) {
+  if (typeof value !== "string") return null;
+  const parts = value.split(",").map((s) => s.trim());
+  if (parts.length !== 2) return null;
+  const lat = Number(parts[0]);
+  const lng = Number(parts[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat, lng };
+}
+
+function mapTravelModeToOsrmProfile(mode) {
+  const m = String(mode || "driving").toLowerCase();
+  if (m === "walking") return "walking";
+  if (m === "bicycling" || m === "cycling") return "cycling";
+  return "driving";
+}
+
+// POST /api/route -> returns OSRM route polyline/geometry
+router.post("/", async (req, res) => {
+  try {
+    const { startCoordinates, endCoordinates, start, end, travelmode, geometry } = req.body || {};
+    const startCoord = isValidCoord(startCoordinates) ? startCoordinates : parseLatLngString(start);
+    const endCoord = isValidCoord(endCoordinates) ? endCoordinates : parseLatLngString(end);
+    if (!startCoord || !endCoord) {
+      return res.status(400).json({ error: "Provide start and end coordinates (object {lat,lng} or string 'lat,lng')" });
+    }
+
+    const profile = mapTravelModeToOsrmProfile(travelmode);
+    const url = `https://router.project-osrm.org/route/v1/${profile}/${startCoord.lng},${startCoord.lat};${endCoord.lng},${endCoord.lat}`;
+    const geometries = geometry === "polyline6" ? "polyline6" : geometry === "polyline" ? "polyline" : "geojson";
+    const resp = await axios.get(url, {
+      params: { overview: "full", geometries },
+      timeout: 15000,
+      headers: { "User-Agent": "RouteXplore/1.0 (contact: example@routexplore.app)", Accept: "application/json" },
+      validateStatus: () => true,
+    });
+    if (resp.status >= 400 || !Array.isArray(resp.data?.routes) || resp.data.routes.length === 0) {
+      return res.status(502).json({ error: "Routing failed" });
+    }
+    const route = resp.data.routes[0];
+    let encodedPolyline = null;
+    let coordinates = [];
+    let geometryOut = null;
+    if (geometries === "geojson") {
+      geometryOut = route.geometry || null; // GeoJSON LineString
+      if (Array.isArray(geometryOut?.coordinates)) {
+        coordinates = geometryOut.coordinates.map(([lng, lat]) => ({ lat, lng }));
       }
-      return { value: String(wp), via: false };
-    })
-    .filter(Boolean);
-}
-
-function buildPathUrl(start, end, waypoints) {
-  let url = `https://www.google.com/maps/dir/${encodeURIComponent(start)}`;
-  waypoints.forEach((wp) => {
-    url += `/${encodeURIComponent(wp.value)}`;
-  });
-  url += `/${encodeURIComponent(end)}`;
-  return url;
-}
-
-function buildApiUrl(start, end, waypoints, travelmode) {
-  const base = new URL("https://www.google.com/maps/dir/");
-  base.searchParams.set("api", "1");
-  base.searchParams.set("origin", start);
-  base.searchParams.set("destination", end);
-  if (travelmode) base.searchParams.set("travelmode", travelmode);
-  if (waypoints.length > 0) {
-    const joined = waypoints
-      .map((wp) => (wp.via ? `via:${wp.value}` : wp.value))
-      .join("|");
-    base.searchParams.set("waypoints", joined);
+    } else {
+      encodedPolyline = route.geometry; // polyline or polyline6
+    }
+    return res.json({
+      provider: "osrm",
+      profile,
+      distanceMeters: Math.round(route.distance || 0),
+      durationSeconds: Math.round(route.duration || 0),
+      osrmUrl: `${url}?overview=full&geometries=${geometries}`,
+      geometry: geometryOut,
+      encodedPolyline,
+      coordinates,
+    });
+  } catch (error) {
+    console.error(error?.message || error);
+    return res.status(500).json({ error: "Failed to generate route" });
   }
-  return base.toString();
-}
-
-// Generate Google Maps route with waypoints
-router.post("/", (req, res) => {
-  const { start, end, waypoints, format, travelmode } = req.body;
-
-  if (!start || !end) {
-    return res.status(400).json({ error: "Start and end required" });
-  }
-
-  const normalizedWps = normalizeWaypoints(waypoints);
-  const fmt = (format || "path").toString().toLowerCase(); // 'path' | 'api'
-  const mode = (travelmode || "driving").toString().toLowerCase(); // driving|walking|bicycling|transit
-
-  let routeUrl;
-  if (fmt === "api") {
-    routeUrl = buildApiUrl(start, end, normalizedWps, mode);
-  } else {
-    routeUrl = buildPathUrl(start, end, normalizedWps);
-  }
-
-  res.json({ routeUrl, meta: { format: fmt, travelmode: mode, waypoints: normalizedWps } });
 });
 
 module.exports = router;

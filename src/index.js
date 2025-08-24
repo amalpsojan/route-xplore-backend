@@ -20,6 +20,7 @@ app.get("/health", (req, res) => {
 app.use("/api/places", placesRouter);
 app.use("/api/parse-link", linkRouter);
 app.use("/api/generate-route", routeRouter);
+app.use("/api/route", routeRouter);
 app.use("/api/place-details", detailsRouter);
 
 app.listen(PORT, () => {

@@ -202,37 +202,10 @@ function parseLatLngString(value) {
 
 // Parse Google Maps link to extract start, end, and optional waypoints
 router.post("/", async (req, res) => {
-  const { link, includeRoute, travelmode, startCoordinates, endCoordinates, start, end, startName, endName } = req.body || {};
-
-  // PRIORITY: explicit coordinates over map link
-  const explicitStart = isValidCoord(startCoordinates)
-    ? startCoordinates
-    : parseLatLngString(start);
-  const explicitEnd = isValidCoord(endCoordinates)
-    ? endCoordinates
-    : parseLatLngString(end);
-
-  if (explicitStart && explicitEnd) {
-    try {
-      let route = null;
-      if (includeRoute === undefined || includeRoute === true) {
-        route = await fetchOsrmRoute(explicitStart, explicitEnd, travelmode);
-      }
-      return res.json({
-        start: { name: typeof startName === "string" ? startName : null, coordinates: explicitStart },
-        end: { name: typeof endName === "string" ? endName : null, coordinates: explicitEnd },
-        waypoints: [],
-        route,
-        meta: { inputLink: link || null, parsedFrom: "coordinates" },
-      });
-    } catch (error) {
-      console.error(error.message);
-      return res.status(500).json({ error: "Failed to process coordinates" });
-    }
-  }
+  const { link } = req.body || {};
 
   if (!link) {
-    return res.status(400).json({ error: "Provide either coordinates (start/end) or a link" });
+    return res.status(400).json({ error: "No link provided" });
   }
 
   try {
@@ -248,15 +221,10 @@ router.post("/", async (req, res) => {
       ]);
       if (!startC && coordPairs[0]) startC = coordPairs[0];
       if (!endC && (coordPairs[1] || coordPairs[0])) endC = coordPairs[1] || coordPairs[0];
-      let route = null;
-      if (startC && endC && (includeRoute === undefined || includeRoute === true)) {
-        route = await fetchOsrmRoute(startC, endC, travelmode);
-      }
       return res.json({
         start: { name: fromApi.start.replace(/\+/g, " "), coordinates: startC || null },
         end: { name: fromApi.end.replace(/\+/g, " "), coordinates: endC || null },
-        waypoints: fromApi.waypoints,
-        route,
+        
         meta: { inputLink: link, finalUrl, parsedFrom: "api=1" },
       });
     }
@@ -271,15 +239,10 @@ router.post("/", async (req, res) => {
       ]);
       if (!startC && coordPairs[0]) startC = coordPairs[0];
       if (!endC && (coordPairs[1] || coordPairs[0])) endC = coordPairs[1] || coordPairs[0];
-      let route = null;
-      if (startC && endC && (includeRoute === undefined || includeRoute === true)) {
-        route = await fetchOsrmRoute(startC, endC, travelmode);
-      }
       return res.json({
         start: { name: fromDir.start.replace(/\+/g, " "), coordinates: startC || null },
         end: { name: fromDir.end.replace(/\+/g, " "), coordinates: endC || null },
-        waypoints: fromDir.waypoints,
-        route,
+        
         meta: { inputLink: link, finalUrl, parsedFrom: "dir" },
       });
     }
@@ -294,15 +257,10 @@ router.post("/", async (req, res) => {
       ]);
       if (!startC && coordPairs[0]) startC = coordPairs[0];
       if (!endC && (coordPairs[1] || coordPairs[0])) endC = coordPairs[1] || coordPairs[0];
-      let route = null;
-      if (startC && endC && (includeRoute === undefined || includeRoute === true)) {
-        route = await fetchOsrmRoute(startC, endC, travelmode);
-      }
       return res.json({
         start: { name: fromSaddr.start.replace(/\+/g, " "), coordinates: startC || null },
         end: { name: fromSaddr.end.replace(/\+/g, " "), coordinates: endC || null },
-        waypoints: fromSaddr.waypoints,
-        route,
+        
         meta: { inputLink: link, finalUrl, parsedFrom: "saddr-daddr" },
       });
     }
