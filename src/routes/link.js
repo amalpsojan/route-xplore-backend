@@ -133,12 +133,106 @@ function extractCoordsFromGoogleUrl(urlString) {
   }
 }
 
+function mapTravelModeToOsrmProfile(mode) {
+  const m = String(mode || "driving").toLowerCase();
+  if (m === "walking") return "walking";
+  if (m === "bicycling" || m === "cycling") return "cycling";
+  return "driving"; // default; OSRM has no transit
+}
+
+async function fetchOsrmRoute(startCoord, endCoord, travelmode) {
+  try {
+    const profile = mapTravelModeToOsrmProfile(travelmode);
+    const url = `https://router.project-osrm.org/route/v1/${profile}/${startCoord.lng},${startCoord.lat};${endCoord.lng},${endCoord.lat}`;
+    const resp = await axios.get(url, {
+      params: { overview: "full", geometries: "geojson" },
+      timeout: 15000,
+      headers: {
+        "User-Agent": "RouteXplore/1.0 (contact: example@routexplore.app)",
+        Accept: "application/json",
+      },
+      validateStatus: () => true,
+    });
+    if (resp.status >= 400 || !Array.isArray(resp.data?.routes) || resp.data.routes.length === 0) {
+      return null;
+    }
+    const route = resp.data.routes[0];
+    const geometry = route.geometry || null; // GeoJSON LineString
+    const coords = Array.isArray(geometry?.coordinates)
+      ? geometry.coordinates.map(([lng, lat]) => ({ lat, lng }))
+      : [];
+    return {
+      osrmUrl: `${url}?overview=full&geometries=geojson`,
+      geometry, // GeoJSON LineString as returned by OSRM
+      coordinates: coords,
+      distanceMeters: Math.round(route.distance || 0),
+      durationSeconds: Math.round(route.duration || 0),
+      provider: "osrm",
+      profile,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function isValidCoord(obj) {
+  return (
+    obj &&
+    typeof obj.lat === "number" &&
+    typeof obj.lng === "number" &&
+    Number.isFinite(obj.lat) &&
+    Number.isFinite(obj.lng) &&
+    obj.lat >= -90 &&
+    obj.lat <= 90 &&
+    obj.lng >= -180 &&
+    obj.lng <= 180
+  );
+}
+
+function parseLatLngString(value) {
+  if (typeof value !== "string") return null;
+  const parts = value.split(",").map((s) => s.trim());
+  if (parts.length !== 2) return null;
+  const lat = Number(parts[0]);
+  const lng = Number(parts[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat, lng };
+}
+
 // Parse Google Maps link to extract start, end, and optional waypoints
 router.post("/", async (req, res) => {
-  const { link } = req.body;
+  const { link, includeRoute, travelmode, startCoordinates, endCoordinates, start, end, startName, endName } = req.body || {};
+
+  // PRIORITY: explicit coordinates over map link
+  const explicitStart = isValidCoord(startCoordinates)
+    ? startCoordinates
+    : parseLatLngString(start);
+  const explicitEnd = isValidCoord(endCoordinates)
+    ? endCoordinates
+    : parseLatLngString(end);
+
+  if (explicitStart && explicitEnd) {
+    try {
+      let route = null;
+      if (includeRoute === undefined || includeRoute === true) {
+        route = await fetchOsrmRoute(explicitStart, explicitEnd, travelmode);
+      }
+      return res.json({
+        start: { name: typeof startName === "string" ? startName : null, coordinates: explicitStart },
+        end: { name: typeof endName === "string" ? endName : null, coordinates: explicitEnd },
+        waypoints: [],
+        route,
+        meta: { inputLink: link || null, parsedFrom: "coordinates" },
+      });
+    } catch (error) {
+      console.error(error.message);
+      return res.status(500).json({ error: "Failed to process coordinates" });
+    }
+  }
 
   if (!link) {
-    return res.status(400).json({ error: "No link provided" });
+    return res.status(400).json({ error: "Provide either coordinates (start/end) or a link" });
   }
 
   try {
@@ -154,10 +248,15 @@ router.post("/", async (req, res) => {
       ]);
       if (!startC && coordPairs[0]) startC = coordPairs[0];
       if (!endC && (coordPairs[1] || coordPairs[0])) endC = coordPairs[1] || coordPairs[0];
+      let route = null;
+      if (startC && endC && (includeRoute === undefined || includeRoute === true)) {
+        route = await fetchOsrmRoute(startC, endC, travelmode);
+      }
       return res.json({
         start: { name: fromApi.start.replace(/\+/g, " "), coordinates: startC || null },
         end: { name: fromApi.end.replace(/\+/g, " "), coordinates: endC || null },
         waypoints: fromApi.waypoints,
+        route,
         meta: { inputLink: link, finalUrl, parsedFrom: "api=1" },
       });
     }
@@ -172,10 +271,15 @@ router.post("/", async (req, res) => {
       ]);
       if (!startC && coordPairs[0]) startC = coordPairs[0];
       if (!endC && (coordPairs[1] || coordPairs[0])) endC = coordPairs[1] || coordPairs[0];
+      let route = null;
+      if (startC && endC && (includeRoute === undefined || includeRoute === true)) {
+        route = await fetchOsrmRoute(startC, endC, travelmode);
+      }
       return res.json({
         start: { name: fromDir.start.replace(/\+/g, " "), coordinates: startC || null },
         end: { name: fromDir.end.replace(/\+/g, " "), coordinates: endC || null },
         waypoints: fromDir.waypoints,
+        route,
         meta: { inputLink: link, finalUrl, parsedFrom: "dir" },
       });
     }
@@ -190,10 +294,15 @@ router.post("/", async (req, res) => {
       ]);
       if (!startC && coordPairs[0]) startC = coordPairs[0];
       if (!endC && (coordPairs[1] || coordPairs[0])) endC = coordPairs[1] || coordPairs[0];
+      let route = null;
+      if (startC && endC && (includeRoute === undefined || includeRoute === true)) {
+        route = await fetchOsrmRoute(startC, endC, travelmode);
+      }
       return res.json({
         start: { name: fromSaddr.start.replace(/\+/g, " "), coordinates: startC || null },
         end: { name: fromSaddr.end.replace(/\+/g, " "), coordinates: endC || null },
         waypoints: fromSaddr.waypoints,
+        route,
         meta: { inputLink: link, finalUrl, parsedFrom: "saddr-daddr" },
       });
     }
